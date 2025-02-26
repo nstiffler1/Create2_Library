@@ -17,20 +17,19 @@
 import serial 
 import struct
 import threading
+import logging
+
+# Configure logging
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
 class SerialCommandInterface(object):
-    """
-    This class handles sending commands to the Create2. Writes will take in tuples
-    and format the data to transfer to the Create.
-    """
+    """Handles sending commands to the iRobot Create 2 over serial."""
 
     def __init__(self):
         """
-        Constructor.
-
-        Creates the serial port, but doesn't open it yet. Call open(port) to open
-        it.
+        Initializes a serial communication object but does not open it yet.
         """
+
         self.ser = serial.Serial()
         self.lock = threading.RLock()
 
@@ -57,16 +56,12 @@ class SerialCommandInterface(object):
         if self.ser.is_open:
             self.ser.close()
 
-        self.ser.open()
-        if self.ser.is_open:
-            # print("Create opened serial: {}".format(self.ser))
-            print('-'*40)
-            print(' Create opened serial connection')
-            print('   port: {}'.format(self.ser.port))
-            print('   datarate: {} bps'.format(self.ser.baudrate))
-            print('-'*40)
-        else:
-            raise Exception(f"Failed to open {port} at {baud}")
+        try:
+            self.ser.open()
+            logging.info(f"Connected to {port} at {baud} baud")
+        except serial.SerialException as e:
+            logging.error(f"Failed to open serial port {port}: {e}")
+            raise
 
     def write(self, opcode, data=None):
         """
@@ -84,7 +79,6 @@ class SerialCommandInterface(object):
             if data:
                 msg += data
 
-            # print(">> write:", msg)
             self.ser.write(struct.pack('B' * len(msg), *msg))
             self.ser.flush()
 
@@ -99,9 +93,7 @@ class SerialCommandInterface(object):
             raise Exception("You must open the serial port first")
 
         with self.lock:
-            data = self.ser.read(num_bytes)
-
-        return data
+            return self.ser.read(num_bytes)
 
     def flush(self):
         """
@@ -117,5 +109,5 @@ class SerialCommandInterface(object):
         Closes the serial connection.
         """
         if self.ser.is_open:
-            print(f"Closing port {self.ser.port} @ {self.ser.baudrate}")
+            logging.info(f"Closing port {self.ser.port} at {self.ser.baudrate} baud")
             self.ser.close()

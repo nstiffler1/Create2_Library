@@ -169,6 +169,7 @@ class Create2(object):
         """
         self.SCI.write(OPCODES.SEEK_DOCK)
         time.sleep(self.sleep_timer)
+        
     # ------------------ Drive Commands ------------------
 
     def drive_stop(self):

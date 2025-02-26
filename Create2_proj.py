@@ -6,6 +6,7 @@
 # v2.0: Update to Python3 -- 2020/04/01
 # v2.1: Stiffler (bare) modifications -- 2022/02/02
 # v3.0: Stiffler Quality of Life changes
+# v3.1: Stiffler Bug Fixes and QoL - 2025/02/18
 
 ###########################################################################
 # Copyright (c) 2015-2020 iRobot Corporation#
@@ -39,13 +40,14 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ###########################################################################
 
-from tkinter import *
-import tkinter.messagebox
-import tkinter.simpledialog
-
+import logging
 import struct
-import sys, glob # for listing serial ports
+import sys
+import glob
 import time
+import tkinter as tk
+from tkinter import messagebox, simpledialog
+from functools import wraps
 
 # Create Library
 import createlib as cl
@@ -53,223 +55,166 @@ import createlib as cl
 try:
     import serial
 except ImportError:
-    tkinter.messagebox.showerror('Import error', 'Please install pyserial.')
+    messagebox.showerror('Import error', 'Please install pyserial using: pip install pyserial')
     raise
 
-
-TEXTWIDTH = 100 # window width, in characters
-TEXTHEIGHT = 24 # window height, in lines
-
+# Constants
+TEXTWIDTH = 100
+TEXTHEIGHT = 24
 VELOCITYCHANGE = 200
 ROTATIONCHANGE = 300
+DOCK_TIMEOUT = 30  # Timeout for docking in seconds
 
-class TetheredDriveApp(Tk):
-    # static variables for keyboard callback -- I know, this is icky
-    callbackKeyUp = False
-    callbackKeyDown = False
-    callbackKeyLeft = False
-    callbackKeyRight = False
-    callbackKeyLastDriveCommand = ''
+# Configure logging
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
-    # Initialize a "Robot" object
-    robot = None
+def require_robot(func):
+    """Decorator to ensure robot is connected before executing a function."""
+    @wraps(func)
+    def wrapper(self, *args, **kwargs):
+        if self.robot is None:
+            messagebox.showinfo('Error', "Robot Not Connected!")
+            return
+        return func(self, *args, **kwargs)
+    return wrapper
 
-    # Mapping of the supported keys (User should modify this to reflect key callbacks)
-    supported_keys = {
-                        "P": "Passive",
-                        "S": "Safe",
-                        "F": "Full",
-                        "C": "Clean",
-                        "D": "Dock",
-                        "R": "Reset",
-                        "Space": "Beep",
-                        "Arrows": "Motion",
-                        "Escape": "Quick Shutdown",
-                        "B": "Print Sensors",
-                     }
-
-    # Project variables appear below this comment
-
-    def help_text(self, key_dict):
-        """
-        Function that generates "help" based on the supplied Dictionary
-        """
-        ret_str = "Supported Keys:"
-        for key, value in key_dict.items():
-            ret_str += f"\n{key}\t{value}"
-        ret_str += "\n\nIf nothing happens after you connect, try pressing 'P' and then 'S' to get into safe mode.\n"
-        return ret_str
-
-
-    def _decorator(foo):
-        def require_robot(self,*args, **kwargs):
-            if self.robot is None:
-                tkinter.messagebox.showinfo('Error', "Robot Not Connected!")
-                return
-            foo(self, *args, **kwargs)
-        return require_robot
-
+class TetheredDriveApp(tk.Tk):
 
     def __init__(self):
-        Tk.__init__(self)
+        super().__init__()
         self.title("iRobot Create 2 Tethered Drive")
-        self.option_add('*tearOff', FALSE)
 
-        self.menubar = Menu()
-        self.configure(menu=self.menubar)
+        self.robot = None
+        self.lights = False
+        self.velocity = 0
+        self.rotation = 0
 
-        createMenu = Menu(self.menubar, tearoff=False)
-        self.menubar.add_cascade(label="Create", menu=createMenu)
+        self._setup_ui()
+        self.bind("<KeyPress>", self.handle_keypress)
+        self.bind("<KeyRelease>", self.handle_keyrelease)
 
-        createMenu.add_command(label="Connect", command=self.onConnect)
-        createMenu.add_command(label="Help", command=self.onHelp)
-        createMenu.add_command(label="Quit", command=self.onQuit)
+    def _setup_ui(self):
+        """Sets up UI elements like the menu and text output."""
+        self.option_add('*tearOff', False)
 
-        self.text = Text(self, height = TEXTHEIGHT, width = TEXTWIDTH, wrap = WORD)
-        self.scroll = Scrollbar(self, command=self.text.yview)
-        self.text.configure(yscrollcommand=self.scroll.set)
-        self.text.pack(side=LEFT, fill=BOTH, expand=True)
-        self.scroll.pack(side=RIGHT, fill=Y)
+        menubar = tk.Menu(self)
+        self.configure(menu=menubar)
 
-        self.text.insert(END, self.help_text(self.supported_keys))
+        create_menu = tk.Menu(menubar, tearoff=False)
+        menubar.add_cascade(label="Create", menu=create_menu)
+        create_menu.add_command(label="Connect", command=self.on_connect)
+        create_menu.add_command(label="Help", command=self.on_help)
+        create_menu.add_command(label="Quit", command=self.on_quit)
 
-        self.bind("<Key>", self.callbackKey)
-        self.bind("<KeyRelease>", self.callbackKey)
+        self.text = tk.Text(self, height=TEXTHEIGHT, width=TEXTWIDTH, wrap=tk.WORD)
+        scroll = tk.Scrollbar(self, command=self.text.yview)
+        self.text.configure(yscrollcommand=scroll.set)
+        self.text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scroll.pack(side=tk.RIGHT, fill=tk.Y)
 
-    def prettyPrint(self, sensors):
-        str = f"{'-'*70}\n"
-        str += f"{'Sensor':>40} | {'Value':<5}\n"
-        str += f"{'-'*70}\n"
-        for k, v in sensors._asdict().items():
-            str += f"{k}: {v}\n"
-        return str
+        self.text.insert(tk.END, self._help_text())
 
+    def _help_text(self):
+        """Returns help text for key mappings."""
+        supported_keys = {
+            "P": "Passive Mode",
+            "S": "Safe Mode",
+            "F": "Full Mode",
+            "C": "Clean",
+            "D": "Dock",
+            "R": "Reset",
+            "B": "Sensor Dump",
+            "Space": "Beep",
+            "Arrows": "Motion",
+            "Escape": "Quick Shutdown",
+        }
+        return "\n".join([f"{key}: {desc}" for key, desc in supported_keys.items()]) + \
+               "\n\nIf nothing happens after you connect, try pressing 'P' and then 'S' to enter safe mode."
 
+    def handle_keypress(self, event):
+        """Handles keypress events."""
+        key = event.keysym.upper()
+        key_mapping = {
+            "P": lambda: self.robot.start(),
+            "S": lambda: self.robot.safe(),
+            "F": lambda: self.robot.full(),
+            "C": lambda: self.robot.clean(),
+            "R": lambda: self.robot.reset(),
+            "SPACE": lambda: self._beep_song(),
+            "B": lambda: logging.info(self._format_sensor_data(self.robot.get_sensors())),
+            "UP": lambda: self._set_motion(velocity=VELOCITYCHANGE),
+            "DOWN": lambda: self._set_motion(velocity=-VELOCITYCHANGE),
+            "LEFT": lambda: self._set_motion(rotation=ROTATIONCHANGE),
+            "RIGHT": lambda: self._set_motion(rotation=-ROTATIONCHANGE),
+            "ESCAPE": self.on_quit
+        }
+        if key in key_mapping:
+            key_mapping[key]()
 
-    @_decorator
-    def callbackKey(self, event):
+    def handle_keyrelease(self, event):
+        """Handles key release events to stop movement."""
+        key = event.keysym.upper()
+        if key in {"UP", "DOWN"}:
+            self._set_motion(velocity=0)
+        elif key in {"LEFT", "RIGHT"}:
+            self._set_motion(rotation=0)
+
+    def _set_motion(self, velocity=None, rotation=None):
         """
-        A handler for keyboard events. Feel free to add more!
+        Updates motion values and sends drive command.
         """
-        k = event.keysym.upper()
-        motionChange = False
+        if velocity is not None:
+            self.velocity = velocity
+        if rotation is not None:
+            self.rotation = rotation
 
-        if event.type == '2': # KeyPress; need to figure out how to get constant
-            if k == 'P':   # Passive
-                print("Passive")
-                self.robot.start()
-            elif k == 'S': # Safe
-                print("Safe")
-                self.robot.safe()
-            elif k == 'F': # Full
-                print("Full")
-                self.robot.full()
-            elif k == 'C': # Clean
-                self.robot.clean()
-            elif k == 'D': # Dock
-                self.robot.dock()
-            elif k == 'SPACE': # Beep
-                # self.sendCommandASCII('140 3 1 64 16 141 3')
-                # setup beep as song 3
-                beep_song = [64, 16]
-                self.robot.createSong(3, beep_song)
-                self.robot.playSong(3)
-            elif k == 'R': # Reset
-                self.robot.reset()
-            elif k == 'B': # Print Sensors
-                sensors = self.robot.get_sensors()
-                sensor_str = self.prettyPrint(sensors)
-                print(sensor_str)
-            elif k == 'UP':
-                self.callbackKeyUp = True
-                motionChange = True
-            elif k == 'DOWN':
-                self.callbackKeyDown = True
-                motionChange = True
-            elif k == 'LEFT':
-                self.callbackKeyLeft = True
-                motionChange = True
-            elif k == 'RIGHT':
-                self.callbackKeyRight = True
-                motionChange = True
-            elif k == 'ESCAPE':
-                if self.robot is not None:
-                    del self.robot
-                self.destroy()
-            else:
-                print("not handled", repr(k))
-        elif event.type == '3': # KeyRelease; need to figure out how to get constant
-            if k == 'UP':
-                self.callbackKeyUp = False
-                motionChange = True
-            elif k == 'DOWN':
-                self.callbackKeyDown = False
-                motionChange = True
-            elif k == 'LEFT':
-                self.callbackKeyLeft = False
-                motionChange = True
-            elif k == 'RIGHT':
-                self.callbackKeyRight = False
-                motionChange = True
+        vr = int(self.velocity + (self.rotation / 2))
+        vl = int(self.velocity - (self.rotation / 2))
+        if self.robot:
+            self.robot.drive_direct(vl, vr)
 
-        if motionChange == True:
-            velocity = 0
-            velocity += VELOCITYCHANGE if self.callbackKeyUp is True else 0
-            velocity -= VELOCITYCHANGE if self.callbackKeyDown is True else 0
-            rotation = 0
-            rotation += ROTATIONCHANGE if self.callbackKeyLeft is True else 0
-            rotation -= ROTATIONCHANGE if self.callbackKeyRight is True else 0
+    def _format_sensor_data(self, sensors):
+        """
+        Formats sensor data for logging.
+        """
+        return "\n".join([f"{key}: {value}" for key, value in sensors._asdict().items()])
 
-            # compute left and right wheel velocities
-            vr = int(velocity + (rotation/2))
-            vl = int(velocity - (rotation/2))
 
-            # create drive command
-
-            cmd = (vl, vr)
-            if cmd != self.callbackKeyLastDriveCommand:
-                self.robot.drive_direct(vl, vr)
-                self.callbackKeyLastDriveCommand = cmd
-
-    def onConnect(self):
-        if self.robot is not None:
-            tkinter.messagebox.showinfo('Oops', "You're already connected to the robot!")
+    def on_connect(self):
+        """
+        Handles connection to the robot.
+        """
+        if self.robot:
+            messagebox.showinfo('Oops', "You're already connected to the robot!")
             return
 
         try:
-            ports = self.getSerialPorts()
-            port = tkinter.simpledialog.askstring('Port?', 'Enter COM port to open.\nAvailable options:\n' + '\n'.join(ports))
-        except EnvironmentError:
-            port = tkinter.simpledialog.askstring('Port?', 'Enter COM port to open.')
-
-        if port is not None:
-            print("Trying " + str(port) + "... ")
-            try:
+            ports = self._get_serial_ports()
+            port = simpledialog.askstring('Port?', 'Enter COM port to open.\nAvailable options:\n' + '\n'.join(ports))
+            if port:
                 self.robot = cl.Create2(port=port, baud=115200)
-                print("Connected!")
-                tkinter.messagebox.showinfo('Connected', "Connection succeeded!")
-            except Exception as e:
-                print(f"Failed. Exception - {e}")
-                tkinter.messagebox.showinfo('Failed', "Sorry, couldn't connect to " + str(port))
+                messagebox.showinfo('Connected', "Connection succeeded!")
+                logging.info(f"Connected to robot on {port}")
+        except Exception as e:
+            logging.error(f"Failed to connect: {e}")
+            messagebox.showerror('Connection Failed', f"Couldn't connect to {port}")
 
+    def on_help(self):
+        """
+        Displays help text.
+        """
+        messagebox.showinfo('Help', self._help_text())
 
-    def onHelp(self):
+    def on_quit(self):
         """
-        Display help text
+        Handles quitting the application.
         """
-        tkinter.messagebox.showinfo('Help', self.help_text(self.supported_keys))
-
-    def onQuit(self):
-        """
-        Confirm whether the user wants to quit.
-        """
-        if tkinter.messagebox.askyesno('Really?', 'Are you sure you want to quit?'):
-            if self.robot is not None:
-                print("Robot object deleted")
+        if messagebox.askyesno('Really?', 'Are you sure you want to quit?'):
+            if self.robot:
                 del self.robot
             self.destroy()
 
-    def getSerialPorts(self):
+    def _get_serial_ports(self):
         """
         Lists serial ports
         From http://stackoverflow.com/questions/12090503/listing-available-com-ports-with-python
@@ -303,9 +248,12 @@ class TetheredDriveApp(Tk):
         return result
 
 
-
     # ----------------------- Custom functions ------------------------------
-
+    def _beep_song(self):
+        logging.info("help")
+        beep_song = [64, 16]
+        self.robot.createSong(3, beep_song)
+        self.robot.playSong(3)
 
     # ----------------------- Main Driver ------------------------------
 if __name__ == "__main__":
