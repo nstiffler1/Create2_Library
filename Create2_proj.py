@@ -85,9 +85,9 @@ class TetheredDriveApp(tk.Tk):
         self.title("iRobot Create 2 Tethered Drive")
 
         self.robot = None
-        self.lights = False
         self.velocity = 0
         self.rotation = 0
+        # custom variables
 
         self._setup_ui()
         self.bind("<KeyPress>", self.handle_keypress)
@@ -250,7 +250,6 @@ class TetheredDriveApp(tk.Tk):
 
     # ----------------------- Custom functions ------------------------------
     def _beep_song(self):
-        logging.info("help")
         beep_song = [64, 16]
         self.robot.createSong(3, beep_song)
         self.robot.playSong(3)
